@@ -1,0 +1,72 @@
+name: Publish on Deno Update
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs every day at midnight
+  workflow_dispatch:
+
+jobs:
+  check-and-publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Fetch latest Deno version
+        id: deno_version
+        run: |
+          DENO_VERSION=$(curl -s https://api.github.com/repos/denoland/deno/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          echo "version=$DENO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Get previous Deno version
+        id: previous_version
+        run: echo "version=$(cat .deno_version || echo 'none')" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: compare_versions
+        run: |
+          if [ "${{ steps.deno_version.outputs.version }}" != "${{ steps.previous_version.outputs.version }}" ]; then
+            echo "update=true" >> $GITHUB_OUTPUT
+          else
+            echo "update=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Deno version file
+        if: steps.compare_versions.outputs.update == 'true'
+        run: echo "${{ steps.deno_version.outputs.version }}" > .deno_version
+
+      - name: Commit version update
+        if: steps.compare_versions.outputs.update == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add .deno_version
+          git commit -m "Update Deno to version ${{ steps.deno_version.outputs.version }}"
+          git push
+
+      - name: Set up Docker Buildx
+        if: steps.compare_versions.outputs.update == 'true'
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        if: steps.compare_versions.outputs.update == 'true'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        if: steps.compare_versions.outputs.update == 'true'
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          build-args: |
+            DENO_VERSION=${{ steps.deno_version.outputs.version }}
+          tags: |
+            joyja/deno-dev:latest
+            joyja/deno-dev:${{ steps.deno_version.outputs.version }}
